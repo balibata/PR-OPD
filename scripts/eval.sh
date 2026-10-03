@@ -31,6 +31,9 @@ esac
 MICRO=${MICRO:-$MICRO_DEFAULT}
 export ALFWORLD_DATA="${ALFWORLD_DATA:-$HOME/.cache/alfworld}"
 export VLLM_ATTENTION_BACKEND="${VLLM_ATTENTION_BACKEND:-FLASH_ATTN}" VLLM_USE_V1="${VLLM_USE_V1:-1}" HYDRA_FULL_ERROR=1 WANDB_MODE=disabled
+export VLLM_USE_FLASHINFER_SAMPLER="${VLLM_USE_FLASHINFER_SAMPLER:-0}"
+MODEL_TAG=$(basename "${MODEL%/}" | tr '[:upper:]' '[:lower:]'); THINK_ARGS=()
+if [ "${THINKING:-0}" = 0 ] && echo "$MODEL_TAG" | grep -q 'qwen3'; then THINK_ARGS=(+data.apply_chat_template_kwargs.enable_thinking=False); fi   # as in training (THINKING=1 to keep the template default)
 TMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/pr_opd_eval.XXXXXX")   # val_only never writes checkpoints; keep default_local_dir out of the run dir
 
 echo "[eval.sh] $RUN step $STEP, env.seed=$SEED -> $OUT"
@@ -56,7 +59,7 @@ python3 -m verl.trainer.main_ppo \
   trainer.critic_warmup=0 trainer.logger=[console] trainer.project_name=pr_opd_eval trainer.experiment_name=eval_${RUN}_step${STEP}_seed${SEED} \
   trainer.default_local_dir=$TMP_DIR trainer.n_gpus_per_node=$GPUS trainer.nnodes=1 trainer.ray_wait_register_center_timeout=600 \
   trainer.val_only=True trainer.resume_mode=resume_path trainer.resume_from_path=$CKPT \
-  "${EXTRA[@]}" > "$OUT" 2>&1 || { echo "[eval.sh] FAILED, see $OUT"; exit 1; }
+  "${THINK_ARGS[@]}" "${EXTRA[@]}" > "$OUT" 2>&1 || { echo "[eval.sh] FAILED, see $OUT"; exit 1; }
 rm -rf "$TMP_DIR"
 echo "[eval.sh] $RUN step $STEP seed $SEED: $(grep -aoE 'val/[A-Za-z_]*success_rate[^ ]*:[0-9.]+' "$OUT" | sort -u | tr '\n' ' ')"
 grep -aoE "val/webshop_task_score[^:]*:[0-9.]+" "$OUT" | tail -1 || true

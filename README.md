@@ -111,8 +111,8 @@ bash scripts/train.sh --method grpo --env alfworld --model Qwen/Qwen2.5-3B-Instr
 
 Replace `alfworld` by `webshop` for WebShop (`examples/*/run_webshop_3b*.sh`). Any model that
 `transformers`/`vLLM` support can be passed to `--model` (Qwen2.5, Qwen3, OLMo-3, ...);
-for Qwen3 add `-- +data.apply_chat_template_kwargs.enable_thinking=False` if you want the
-non-thinking mode.
+for Qwen3 models the launcher passes `enable_thinking=False` (the setting used in the paper);
+`--thinking` keeps the template default.
 
 Hyper-parameters follow the SDAR paper scripts: 16 tasks x 8 rollouts per step, lr 1e-6,
 KL coefficient 0.01 (`low_var_kl`), invalid-action penalty 0.1, 150 steps, ALFWorld

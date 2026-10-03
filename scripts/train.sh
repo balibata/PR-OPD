@@ -20,6 +20,7 @@
 #   --tp       vLLM tensor parallel size                              (default 2)
 #   --seed     env.seed                                               (default 0)
 #   --save_freq / --test_freq                                         (default 10 / 5)
+#   --thinking   keep the Qwen3 thinking template (default: enable_thinking=False for Qwen3 models)
 #   --ckpt_root  checkpoint root                                      (default ./checkpoints)
 #   --data_dir   parquet dir with train.parquet/test.parquet          (default $HOME/data/verl-agent/text)
 #   --log_dir    where the console log goes                           (default ./logs)
@@ -31,7 +32,7 @@
 set -euo pipefail
 
 METHOD=""; ENV=""; MODEL=""; NAME=""; INIT="base"; PROJ="none"; COEF="0.01"; STEPS=150; GPUS=8
-MICRO=""; TP=2; SEED=0; SAVE_FREQ=10; TEST_FREQ=5; CKPT_ROOT="./checkpoints"; DATA_DIR="${HOME}/data/verl-agent/text"; LOG_DIR="./logs"
+MICRO=""; TP=2; SEED=0; THINKING=0; SAVE_FREQ=10; TEST_FREQ=5; CKPT_ROOT="./checkpoints"; DATA_DIR="${HOME}/data/verl-agent/text"; LOG_DIR="./logs"
 EXTRA=()
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -41,8 +42,9 @@ while [ $# -gt 0 ]; do
     --micro) MICRO=$2; shift 2;;     --tp) TP=$2; shift 2;;         --seed) SEED=$2; shift 2;;
     --save_freq) SAVE_FREQ=$2; shift 2;; --test_freq) TEST_FREQ=$2; shift 2;;
     --ckpt_root) CKPT_ROOT=$2; shift 2;; --data_dir) DATA_DIR=$2; shift 2;; --log_dir) LOG_DIR=$2; shift 2;;
+    --thinking) THINKING=1; shift;;
     --) shift; EXTRA=("$@"); break;;
-    -h|--help) sed -n '2,32p' "$0"; exit 0;;
+    -h|--help) sed -n '2,33p' "$0"; exit 0;;
     *) echo "unknown option: $1 (use -- before hydra overrides)"; exit 1;;
   esac
 done
@@ -92,8 +94,15 @@ case "$METHOD" in
           [ "$INIT" != base ] && METHOD_ARGS+=(+algorithm.pr_opd.proj_allow_missing=True);;
 esac
 
+# Qwen3 models: the paper runs use the non-thinking chat template (the ALFWorld/WebShop
+# prompts ask for <think>...</think> inside the response). Pass --thinking to keep the template default.
+if [ "$THINKING" = 0 ] && echo "$MODEL_TAG" | grep -q 'qwen3'; then
+  METHOD_ARGS+=(+data.apply_chat_template_kwargs.enable_thinking=False)
+fi
+
 export ALFWORLD_DATA="${ALFWORLD_DATA:-$HOME/.cache/alfworld}"
 export VLLM_ATTENTION_BACKEND="${VLLM_ATTENTION_BACKEND:-FLASH_ATTN}" VLLM_USE_V1="${VLLM_USE_V1:-1}" HYDRA_FULL_ERROR=1
+export VLLM_USE_FLASHINFER_SAMPLER="${VLLM_USE_FLASHINFER_SAMPLER:-0}"   # same sampler kernel as the paper runs
 export WANDB_MODE="${WANDB_MODE:-disabled}"
 
 echo "[train.sh] $NAME: method=$METHOD env=$ENV model=$MODEL init=$INIT proj=$PROJ coef=$COEF steps=$STEPS micro=$MICRO -> $CK (log: $RUNLOG)"
