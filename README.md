@@ -139,14 +139,7 @@ merges them into a Hugging Face model. PR-OPD+MLP additionally stores `oprd_proj
 next to the actor shards; when branching from a checkpoint that has no projectors (a GRPO run)
 the launcher passes `+algorithm.pr_opd.proj_allow_missing=True` so they start from scratch.
 
-## Changes relative to upstream SDAR
 
-* New: `main_pr_opd.py`, `pr_opd_ray_trainer.py`, `pr_opd_utils.py`, `oprd_utils.py`, `oprd_projector.py`, `scripts/train.sh`, `scripts/eval.sh`.
-* `dp_actor.py`: `_forward_micro_batch` can return selected hidden layers (rmpad and padded paths); `update_policy` adds the representation loss and runs the teacher forward per micro-batch.
-* `fsdp_workers.py`: save/load hooks for the projector state.
-* `fsdp_checkpoint_manager.py`: optimizer state is optional on save/load (lower host-memory peak; checkpoints without optimizer can still be resumed).
-* `alfworld/envs.py`, `environments/__init__.py`: lazy torch imports in env workers (memory); `ALFWORLD_DET_EVAL=1` gives a deterministic full-coverage validation set.
-* Removed: Search-QA, Sokoban, gym-cards and AppWorld environments and the OPSD / Skill-SD / RLSD / Skill-GRPO entry points.
 
 ## Acknowledgements
 
