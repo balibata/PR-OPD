@@ -8,7 +8,7 @@ The code is built on the [SDAR](https://github.com/ZJU-REAL/SDAR) codebase
 (itself built on [verl-agent](https://github.com/langfengQ/verl-agent) / [verl](https://github.com/volcengine/verl)).
 Everything that is not needed for GRPO, SDAR and PR-OPD on the two environments has been removed.
 
-## Method in one paragraph
+## Method
 
 The policy is trained with GRPO (plus a KL term to the reference policy). On top of
 that, at every training step the **current policy itself** reads each of its own
