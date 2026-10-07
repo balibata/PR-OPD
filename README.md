@@ -6,35 +6,8 @@ multi-turn LLM agents, together with the two baselines it is compared against
 
 The code is built on the [SDAR](https://github.com/ZJU-REAL/SDAR) codebase
 (itself built on [verl-agent](https://github.com/langfengQ/verl-agent) / [verl](https://github.com/volcengine/verl)).
-Everything that is not needed for GRPO, SDAR and PR-OPD on the two environments has been removed.
 
-## Method
 
-The policy is trained with GRPO (plus a KL term to the reference policy). On top of
-that, at every training step the **current policy itself** reads each of its own
-completed trajectories and writes a short *hindsight skill* (what worked, what went
-wrong, what to do next time). That skill is prepended to the ordinary context to form a
-**privileged teacher branch that shares weights with the student**. Instead of distilling
-the teacher's next-token distribution (as SDAR does), PR-OPD aligns the student's
-**hidden states** with the teacher's hidden states at every layer, on the response tokens
-of the sampled trajectories. The optional **+MLP** variant passes the student hidden states
-through a trainable per-layer MLP before the alignment.
-
-Implementation map:
-
-| component | file |
-|---|---|
-| entry point / config translation | `verl/trainer/main_pr_opd.py` |
-| hindsight-skill generation, teacher context | `verl/trainer/ppo/pr_opd_ray_trainer.py`, `verl/trainer/ppo/pr_opd_utils.py` |
-| representation loss, layer selection | `verl/trainer/ppo/oprd_utils.py` |
-| per-layer MLP projection head (+MLP variant) | `verl/trainer/ppo/oprd_projector.py` |
-| hidden-state extraction and the extra loss term in the actor | `verl/workers/actor/dp_actor.py` (`return_hidden_layers`, `update_policy`) |
-| projector checkpointing | `verl/workers/fsdp_workers.py` (`oprd_proj_save/load`) |
-| GRPO baseline | `verl/trainer/main_ppo.py` (upstream verl-agent) |
-| SDAR baseline | `verl/trainer/main_sdar.py` (upstream SDAR; static skills in `skills/`) |
-
-`verl/trainer/ppo/rlsd_ray_trainer.py` and `skillsd_ray_trainer.py` are the SDAR-family
-trainer skeleton that both SDAR and PR-OPD inherit from; they are not separate baselines here.
 
 ## Installation
 
