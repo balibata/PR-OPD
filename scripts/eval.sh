@@ -24,8 +24,8 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd); cd "$ROOT"
 RUN=$(basename "$(dirname "$CKPT")"); STEP=${CKPT##*global_step_}
 OUT=${OUT:-"$(dirname "$CKPT")/eval_step${STEP}_seed${SEED}.log"}
 case "$ENV" in
-  alfworld) ENV_NAME="alfworld/AlfredTWEnv"; MAX_STEPS=50; MAX_PROMPT=2048; GPU_UTIL=0.6;  MICRO_DEFAULT=32;;
-  webshop)  ENV_NAME="Webshop";             MAX_STEPS=15; MAX_PROMPT=4096; GPU_UTIL=0.75; MICRO_DEFAULT=8;;
+  alfworld) ENV_NAME="alfworld/AlfredTWEnv"; MAX_STEPS=50; MAX_PROMPT=2048; MINI=256; GPU_UTIL=0.6;  MICRO_DEFAULT=32;;
+  webshop)  ENV_NAME="Webshop";             MAX_STEPS=15; MAX_PROMPT=4096; MINI=64;  GPU_UTIL=0.75; MICRO_DEFAULT=8;;
   *) echo "unknown --env $ENV"; exit 1;;
 esac
 MICRO=${MICRO:-$MICRO_DEFAULT}
@@ -45,7 +45,7 @@ python3 -m verl.trainer.main_ppo \
   data.filter_overlong_prompts=True data.truncation=error data.return_raw_chat=True \
   actor_rollout_ref.model.path=$MODEL \
   actor_rollout_ref.model.use_remove_padding=True \
-  actor_rollout_ref.actor.ppo_mini_batch_size=64 actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=$MICRO \
+  actor_rollout_ref.actor.ppo_mini_batch_size=$MINI actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=$MICRO \
   actor_rollout_ref.actor.use_kl_loss=True actor_rollout_ref.actor.kl_loss_coef=0.01 actor_rollout_ref.actor.kl_loss_type=low_var_kl \
   actor_rollout_ref.model.enable_gradient_checkpointing=True \
   actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=32 \
