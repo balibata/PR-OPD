@@ -1,5 +1,9 @@
 # PR-OPD: Privileged Representation On-Policy Distillation for Agentic RL
 
+[![arXiv](https://img.shields.io/badge/arXiv-2609.36642-b31b1b.svg)](https://arxiv.org/abs/2609.36642)
+
+Paper: **PR-OPD: Privileged Representation On-policy Self-Distillation for Agentic Reinforcement Learning** — https://arxiv.org/abs/2609.36642
+
 This repository contains the code for **PR-OPD**, a self-distillation method for
 multi-turn LLM agents, together with the two baselines it is compared against
 (**GRPO** and **SDAR**) on **ALFWorld** and **WebShop**.
@@ -113,6 +117,19 @@ next to the actor shards; when branching from a checkpoint that has no projector
 the launcher passes `+algorithm.pr_opd.proj_allow_missing=True` so they start from scratch.
 
 
+
+## Citation
+
+If you find this code useful, please cite:
+
+```bibtex
+@article{li2026propd,
+  title={PR-OPD: Privileged Representation On-policy Self-Distillation for Agentic Reinforcement Learning},
+  author={Li, Muyang and Yang, Jie and Fang, Zhengyu and Zhu, Junchao and Xiao, Zhengkun and Deng, Ruining and Jiang, Zhe and Chen, Shigang},
+  journal={arXiv preprint arXiv:2609.36642},
+  year={2026}
+}
+```
 
 ## Acknowledgements
 
