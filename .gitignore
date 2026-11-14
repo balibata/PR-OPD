@@ -139,3 +139,7 @@ logs/
 *.log
 agent_system/environments/env_package/webshop/webshop/data
 agent_system/environments/env_package/webshop/webshop/search_engine/indexes*
+# experiments/: site-specific config and run outputs
+experiments/site.sh
+/work/
+/assets/

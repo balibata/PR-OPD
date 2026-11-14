@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 import os
+import re
 import random
 import shutil
 import tempfile
@@ -77,8 +78,16 @@ class BaseCheckpointManager:
     def remove_previous_save_local_path(self, path):
         if isinstance(path, str):
             path = [path]
+        # PR_OPD_KEEP_CKPT_STEPS="100 120 140": checkpoints of these global steps are never rotated out by
+        # max_ckpt_to_keep (set by scripts/train.sh --keep_steps). Used to keep the branch points of a GRPO
+        # trunk and the evaluation steps of a run while only the newest other checkpoint stays on disk.
+        keep = {int(x) for x in re.split(r"[,\s]+", os.environ.get("PR_OPD_KEEP_CKPT_STEPS", "").strip()) if x}
         for p in path:
             abs_path = os.path.abspath(p)
+            m = re.search(r"global_step_(\d+)", abs_path)
+            if m and int(m.group(1)) in keep:
+                print(f"Checkpoint manager keeps protected checkpoint: {abs_path}")
+                continue
             print(f"Checkpoint manager remove previous save local path: {abs_path}")
             if not os.path.exists(abs_path):
                 continue

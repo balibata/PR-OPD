@@ -55,6 +55,11 @@ One launcher covers all three methods and both environments:
 bash scripts/train.sh --method {grpo|sdar|pr-opd} --env {alfworld|webshop} --model <hf-id-or-path> [options] [-- hydra overrides]
 ```
 
+For same-start comparisons, three more methods run through the PR-OPD entry point (same rollout, skill
+generation and logging as `pr-opd`, only the distillation term differs): `grpo-pr` (GRPO only),
+`token-opd` (SDAR's gated token-level objective on the self-generated hindsight skills) and
+`skillsd-self` (Skill-SD objective on the self-generated hindsight skills).
+
 The two switches that define a PR-OPD run:
 
 | switch | values | meaning |
@@ -65,7 +70,9 @@ The two switches that define a PR-OPD run:
 Other options: `--coef` (representation-loss weight, default 0.01), `--steps` (default 150),
 `--micro` (actor micro batch per GPU: default 32 on ALFWorld / 8 on WebShop; halve for 7B models),
 `--gpus`, `--tp`, `--seed` (env seed, default 0), `--save_freq`/`--test_freq` (10 / 5),
-`--ckpt_root` (default `./checkpoints`), `--name`. Run `bash scripts/train.sh --help` for the list.
+`--ckpt_root` (default `./checkpoints`), `--name`, `--keep_steps "150 200"` (checkpoints never rotated out),
+`--ref_model` (KL reference if `--model` is a merged checkpoint), `--val_n`/`--val_dir`/`--eval_split`
+(validation set), `--rollout_seed` (vLLM engine seed). Run `bash scripts/train.sh --help` for the list.
 
 Typical sequence on ALFWorld with Qwen2.5-3B-Instruct (8 GPUs):
 
@@ -111,12 +118,37 @@ bash scripts/eval.sh --ckpt checkpoints/<run>/global_step_150 --env alfworld --m
 bash examples/eval_130_140_150.sh checkpoints/<run> alfworld Qwen/Qwen2.5-3B-Instruct   # steps 130/140/150 with env.seed 1/2/3
 ```
 
+Deterministic full-coverage evaluation (every task exactly once, identical for all runs) is switched on by
+environment variables: `ALFWORLD_DET_EVAL=1` with `--val_n 140` plays each of the 140 seen games once
+(`--val_n 134 --eval_split eval_out_of_distribution` for the unseen split); `WEBSHOP_DET_EVAL=1
+WEBSHOP_EVAL_ADVANCE=1` with a 500-row validation parquet and `--val_n 125` plays all 500 WebShop test goals in
+4 batches. Without them the legacy random 128-task sample is used. See `experiments/README.md`.
+
 Checkpoints are standard verl FSDP checkpoints (`global_step_N/actor/`); `scripts/model_merger.py`
 merges them into a Hugging Face model. PR-OPD+MLP additionally stores `oprd_projectors.pt`
 next to the actor shards; when branching from a checkpoint that has no projectors (a GRPO run)
 the launcher passes `+algorithm.pr_opd.proj_allow_missing=True` so they start from scratch.
 
 
+
+## Branched-start experiments
+
+`experiments/` runs the full comparison: one GRPO trunk per setting, and every arm (GRPO control, PR-OPD with
+and without projector, token-level OPD = SDAR objective, Skill-SD) branched from the same trunk checkpoint with
+weights, optimizer state and step counter, two training seeds, deterministic evaluation:
+
+| environment | branch points (GRPO step) | evaluated at step |
+|---|---|---|
+| ALFWorld | 100, 120 | 150, 200 |
+| WebShop | 100, 120, 140 | 150, 200 |
+
+```bash
+bash experiments/setup.sh --base_3b <hf-id-or-dir> [--base_17b <hf-id-or-dir>]
+SMOKE=1 bash experiments/submit_all.sh            # smoke chain first
+bash experiments/submit_all.sh                    # SLURM (or experiments/run_local.sh without SLURM)
+python experiments/collect_results.py             # -> work/results/summary.md
+```
+Details, outputs and troubleshooting: [`experiments/README.md`](experiments/README.md).
 
 ## Citation
 

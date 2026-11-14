@@ -569,7 +569,13 @@ class ActorRolloutRefWorker(Worker):
             self.rollout, self.rollout_sharding_manager = self._build_rollout(trust_remote_code=self.config.model.get("trust_remote_code", False))
 
         if self._is_ref:
-            local_path = copy_to_local(self.config.model.path, use_shm=use_shm)
+            # Optional `actor_rollout_ref.ref.model_path`: lets the actor start from a
+            # merged checkpoint (model.path) while the KL reference stays the base model,
+            # as in a run resumed from that checkpoint. Default: same as model.path.
+            ref_path = self.config.ref.get("model_path", None) or self.config.model.path
+            if ref_path != self.config.model.path:
+                print(f"[ref] KL reference model: {ref_path} (actor init: {self.config.model.path})")
+            local_path = copy_to_local(ref_path, use_shm=use_shm)
             self.ref_module_fsdp = self._build_model_optimizer(
                 model_path=local_path,
                 fsdp_config=self.config.ref.fsdp_config,

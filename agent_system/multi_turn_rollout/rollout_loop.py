@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
 import torch
 import numpy as np
 from verl import DataProto
@@ -30,6 +31,14 @@ from verl.protocol import pad_dataproto_to_divisor, unpad_dataproto
 def _gamefiles_from_infos(infos: List[Dict]) -> np.ndarray:
     """Extract per-env AlfWorld gamefile paths from env step/reset infos."""
     return np.array([info.get("extra.gamefile") for info in infos], dtype=object)
+
+
+def _traj_dump_text(arr, i) -> str:
+    """Trajectory export: i-th raw observation as plain text ('' if the env has none)."""
+    try:
+        return "" if arr is None else str(arr[i])
+    except Exception:
+        return ""
 
 
 class TrajectoryCollector:
@@ -344,6 +353,11 @@ class TrajectoryCollector:
         episode_lengths = np.zeros(batch_size, dtype=np.float32)
         episode_rewards = np.zeros(batch_size, dtype=np.float32)
         tool_callings = np.zeros(batch_size, dtype=np.float32)
+        # Analysis hook: optional per-episode trajectory export. Off unless PR_OPD_TRAJ_DUMP names a
+        # JSONL file; when off nothing below changes the rollout.
+        traj_dump_path = os.environ.get("PR_OPD_TRAJ_DUMP")
+        traj_dump_steps = [[] for _ in range(batch_size)] if traj_dump_path else None
+        traj_dump_gamefiles = [None if g is None else str(g) for g in current_gamefiles] if traj_dump_path else None
         # Trajectory collection loop
         for _step in range(self.config.env.max_steps):
             active_masks = np.logical_not(is_done)
@@ -380,6 +394,14 @@ class TrajectoryCollector:
             batch = batch.union(batch_output)
             
             text_actions = self.tokenizer.batch_decode(batch.batch['responses'], skip_special_tokens=True)
+
+            if traj_dump_steps is not None:
+                # admissible commands offered to the student for THIS step (ALFWorld; None for other envs)
+                try:
+                    _adm = [None if a is None else list(a) for a in envs.envs.get_admissible_commands]
+                except Exception:
+                    _adm = [None] * batch_size
+                _raw_responses = [str(a) for a in text_actions]   # envs.step() rewrites text_actions in place
             
             next_obs, rewards, dones, infos = envs.step(text_actions)
             current_gamefiles = _gamefiles_from_infos(infos)
@@ -394,6 +416,24 @@ class TrajectoryCollector:
                 batch.non_tensor_batch['is_action_valid'] = np.array([info['is_action_valid'] for info in infos], dtype=bool)
             else:
                 batch.non_tensor_batch['is_action_valid'] = np.ones(batch_size, dtype=bool)
+
+            if traj_dump_steps is not None:
+                _rew = torch_to_numpy(rewards)
+                _prev, _next = obs.get('anchor'), next_obs.get('anchor')
+                for i in range(batch_size):
+                    if active_masks[i]:
+                        traj_dump_steps[i].append({
+                            "t": int(_step),
+                            "obs": _traj_dump_text(_prev, i),            # what the student saw before acting
+                            "response": _raw_responses[i],               # raw student output
+                            "action": str(text_actions[i]),              # action string sent to the env (after projection)
+                            "admissible": _adm[i],                       # commands listed in the prompt for this step
+                            "feedback": _traj_dump_text(_next, i),       # raw env text after the action
+                            "is_action_valid": bool(infos[i].get('is_action_valid', True)),
+                            "reward": float(_rew[i]),
+                            "done": bool(dones[i]),
+                            "won": bool(infos[i].get('won', False)),
+                        })
 
             if 'tool_calling' in infos[0]:
                 tool_callings[active_masks] += np.array([info['tool_calling'] for info in infos], dtype=np.float32)[active_masks]
@@ -429,6 +469,22 @@ class TrajectoryCollector:
                     episode_rewards=episode_rewards, 
                     episode_lengths=episode_lengths,
                     )
+
+        if traj_dump_steps is not None:
+            import json
+            os.makedirs(os.path.dirname(os.path.abspath(traj_dump_path)), exist_ok=True)
+            with open(traj_dump_path, "a") as f:
+                for i in range(batch_size):
+                    f.write(json.dumps({
+                        "env_index": i,
+                        "traj_uid": str(traj_uid[i]),
+                        "gamefile": traj_dump_gamefiles[i],
+                        "success": bool(any(st["won"] for st in traj_dump_steps[i])),
+                        "episode_reward": float(episode_rewards[i]),
+                        "episode_length": int(episode_lengths[i]),
+                        "steps": traj_dump_steps[i],
+                    }, ensure_ascii=False) + "\n")
+            print(f"[traj_dump] {batch_size} episodes appended to {traj_dump_path}")
         
         return total_batch_list, episode_rewards, episode_lengths, success, traj_uid, tool_callings
     

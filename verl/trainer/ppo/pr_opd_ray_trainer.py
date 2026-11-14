@@ -16,6 +16,7 @@ teacher context and ships it to the actor, and (b) returns teacher log-probs
 for the optional output-space (token-level, SDAR-style gated) distillation term.
 """
 
+import os
 import numpy as np
 import torch
 
@@ -65,7 +66,7 @@ class PROPDRayTrainer(SkillSDRayTrainer):
         # With both distillation coefficients at zero this reduces to plain GRPO;
         # skip skill generation and the teacher forward entirely so the run is a
         # true baseline (no wasted generation round, no extra sampling RNG draws).
-        self.teacher_enabled = cfg.get("coef", 0.0) > 0 or self.use_oprd
+        self.teacher_enabled = cfg.get("coef", 0.0) > 0 or cfg.get("sdl_coef", 0.0) > 0 or self.use_oprd
         if not self.teacher_enabled:
             print("[PR-OPD] both distillation coefs are 0 -> pure GRPO baseline: "
                   "hindsight-skill generation and teacher forward DISABLED")
@@ -113,6 +114,28 @@ class PROPDRayTrainer(SkillSDRayTrainer):
         for (uid, _text, reward), skill in list(zip(records, skills))[: self.log_skill_examples]:
             preview = skill[:400].replace("\n", " | ")
             print(f"[PR-OPD]   example (reward={reward:.1f}): {preview}")
+
+        # Analysis hook: optional export of every hindsight skill of every update. Off unless
+        # PR_OPD_SKILL_DUMP names a JSONL file; it only writes text that was generated anyway.
+        skill_dump_path = os.environ.get("PR_OPD_SKILL_DUMP")
+        if skill_dump_path:
+            import json
+            os.makedirs(os.path.dirname(os.path.abspath(skill_dump_path)), exist_ok=True)
+            gf_by_traj = {}
+            if "gamefile" in batch.non_tensor_batch:   # ALFWorld: which game the trajectory was played on
+                for u, g in zip(batch.non_tensor_batch["traj_uid"], batch.non_tensor_batch["gamefile"]):
+                    gf_by_traj.setdefault(str(u), None if g is None else str(g))
+            with open(skill_dump_path, "a") as f:
+                for (uid, text, reward), skill in zip(records, skills):
+                    f.write(json.dumps({
+                        "global_step": int(getattr(self, "global_steps", -1)),
+                        "traj_uid": str(uid),
+                        "gamefile": gf_by_traj.get(str(uid)),
+                        "reward": float(reward),
+                        "skill": skill,                 # exactly the text the teacher context receives
+                        "trajectory": text,             # serialized trajectory the analyzer saw
+                    }, ensure_ascii=False) + "\n")
+            print(f"[PR-OPD] {len(skills)} hindsight skills appended to {skill_dump_path}")
 
         return skill_by_traj
 

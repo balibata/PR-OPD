@@ -6,6 +6,10 @@
 #
 # Options
 #   --method   grpo | sdar | pr-opd                                   (required)
+#              same-start comparison arms (all through the PR-OPD entry, same pipeline/RNG as pr-opd):
+#                grpo-pr     GRPO only (both distillation coefficients 0)
+#                token-opd   SDAR gated token objective (coef 0.01, beta 5) on self-generated hindsight skills
+#                skillsd-self Skill-SD objective (k3 KL x importance ratio, lambda 0.001) on self-generated skills
 #   --env      alfworld | webshop                                     (required)
 #   --model    HF model id or local path                              (required)
 #   --name     run name; checkpoints go to <ckpt_root>/<name>          (default <method>-<env>-<model basename>[-mlp][-from<N>])
@@ -24,6 +28,22 @@
 #   --ckpt_root  checkpoint root                                      (default ./checkpoints)
 #   --data_dir   parquet dir with train.parquet/test.parquet          (default $HOME/data/verl-agent/text)
 #   --log_dir    where the console log goes                           (default ./logs)
+#   --ref_model  KL reference model (default: same as --model). Use the base model when --model
+#                is a merged checkpoint, so the KL anchor matches a resumed run.
+#   --nothink    force the non-thinking chat template (needed when --model is a merged
+#                checkpoint dir whose name no longer reveals the model family)
+#   --val_n      validation episodes per pass = data.val_batch_size (default 128); the val
+#                parquet in --val_dir must have exactly this many rows
+#   --val_dir    parquet dir for validation (default: --data_dir)
+#   --eval_split ALFWorld split: eval_in_distribution (default) | eval_out_of_distribution
+#   --rollout_seed  vLLM sampling seed (default: config default)
+#   --skill_source  pr-opd teacher context: self (default) | shuffled (other trajectory's skill)
+#   --ckpt_contents comma list for actor checkpoints, e.g. model,extra (default model,optimizer,extra)
+#   --gpu_util   vLLM gpu_memory_utilization (default alfworld 0.6 / webshop 0.75)
+#   --ray_cpus   ray_init.num_cpus (set to the SLURM CPU allocation)
+#   --lp_micro   log-prob micro batch per GPU for rollout/ref/teacher scoring (default 32)
+#   --keep_steps "100 120"  global steps whose checkpoints are never rotated out (with
+#                trainer.max_actor_ckpt_to_keep=1 only these plus the newest checkpoint stay on disk)
 # Anything after "--" is passed verbatim to hydra (e.g. trainer.logger=['console','wandb']).
 #
 # All protocol hyper-parameters follow the SDAR paper scripts (examples/*_trainer/run_*.sh in
@@ -32,7 +52,7 @@
 set -euo pipefail
 
 METHOD=""; ENV=""; MODEL=""; NAME=""; INIT="base"; PROJ="none"; COEF="0.01"; STEPS=150; GPUS=8
-MICRO=""; TP=2; SEED=0; THINKING=0; SAVE_FREQ=10; TEST_FREQ=5; CKPT_ROOT="./checkpoints"; DATA_DIR="${HOME}/data/verl-agent/text"; LOG_DIR="./logs"
+MICRO=""; TP=2; SEED=0; THINKING=0; NOTHINK=0; REF_MODEL=""; VAL_N=128; VAL_DIR=""; EVAL_SPLIT=""; ROLLOUT_SEED=""; SKILL_SOURCE=self; CKPT_CONTENTS=""; GPU_UTIL_OVR=""; RAY_CPUS=""; LP_MICRO=32; KEEP_STEPS=""; SAVE_FREQ=10; TEST_FREQ=5; CKPT_ROOT="./checkpoints"; DATA_DIR="${HOME}/data/verl-agent/text"; LOG_DIR="./logs"
 EXTRA=()
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -42,14 +62,19 @@ while [ $# -gt 0 ]; do
     --micro) MICRO=$2; shift 2;;     --tp) TP=$2; shift 2;;         --seed) SEED=$2; shift 2;;
     --save_freq) SAVE_FREQ=$2; shift 2;; --test_freq) TEST_FREQ=$2; shift 2;;
     --ckpt_root) CKPT_ROOT=$2; shift 2;; --data_dir) DATA_DIR=$2; shift 2;; --log_dir) LOG_DIR=$2; shift 2;;
-    --thinking) THINKING=1; shift;;
+    --thinking) THINKING=1; shift;;     --nothink) NOTHINK=1; shift;;
+    --ref_model) REF_MODEL=$2; shift 2;; --val_n) VAL_N=$2; shift 2;; --val_dir) VAL_DIR=$2; shift 2;;
+    --eval_split) EVAL_SPLIT=$2; shift 2;; --rollout_seed) ROLLOUT_SEED=$2; shift 2;; --skill_source) SKILL_SOURCE=$2; shift 2;;
+    --ckpt_contents) CKPT_CONTENTS=$2; shift 2;; --gpu_util) GPU_UTIL_OVR=$2; shift 2;; --ray_cpus) RAY_CPUS=$2; shift 2;; --lp_micro) LP_MICRO=$2; shift 2;;
+    --keep_steps) KEEP_STEPS=$2; shift 2;;
     --) shift; EXTRA=("$@"); break;;
-    -h|--help) sed -n '2,33p' "$0"; exit 0;;
+    -h|--help) sed -n '2,50p' "$0"; exit 0;;
     *) echo "unknown option: $1 (use -- before hydra overrides)"; exit 1;;
   esac
 done
 [ -n "$METHOD" ] && [ -n "$ENV" ] && [ -n "$MODEL" ] || { echo "--method, --env and --model are required (see --help)"; exit 1; }
-case "$METHOD" in grpo|sdar|pr-opd) ;; *) echo "unknown --method $METHOD (grpo|sdar|pr-opd)"; exit 1;; esac
+case "$METHOD" in grpo|sdar|pr-opd|grpo-pr|token-opd|skillsd-self) ;; *) echo "unknown --method $METHOD (grpo|sdar|pr-opd|grpo-pr|token-opd|skillsd-self)"; exit 1;; esac
+case "$SKILL_SOURCE" in self|shuffled) ;; *) echo "unknown --skill_source $SKILL_SOURCE (self|shuffled)"; exit 1;; esac
 case "$ENV" in alfworld|webshop) ;; *) echo "unknown --env $ENV (alfworld|webshop)"; exit 1;; esac
 case "$PROJ" in none|mlp) ;; *) echo "unknown --proj $PROJ (none|mlp)"; exit 1;; esac
 
@@ -84,6 +109,8 @@ case "$ENV" in
   webshop)  ENV_NAME="Webshop";             MAX_STEPS=15; MAX_PROMPT=4096; MINI=64;  GPU_UTIL=0.75; MICRO_DEFAULT=8;;
 esac
 MICRO=${MICRO:-$MICRO_DEFAULT}
+[ -n "$GPU_UTIL_OVR" ] && GPU_UTIL=$GPU_UTIL_OVR
+VAL_DIR=${VAL_DIR:-$DATA_DIR}
 case "$METHOD" in
   grpo)   ENTRY=verl.trainer.main_ppo;    METHOD_ARGS=();;
   sdar)   ENTRY=verl.trainer.main_sdar;   METHOD_ARGS=(+algorithm.sdar.sdar_coef=0.01 +algorithm.sdar.gate_beta=5.0
@@ -91,12 +118,23 @@ case "$METHOD" in
   pr-opd) ENTRY=verl.trainer.main_pr_opd; METHOD_ARGS=(+algorithm.pr_opd.oprd_coef=$COEF +algorithm.pr_opd.oprd_layers=all
                                                        +algorithm.pr_opd.oprd_normalize=True +algorithm.pr_opd.oprd_proj_mode=$PROJ)
           [ "$PROJ" = mlp ] && METHOD_ARGS+=(+algorithm.pr_opd.oprd_proj_hidden=512 +algorithm.pr_opd.oprd_proj_lr=1e-4)
-          [ "$INIT" != base ] && METHOD_ARGS+=(+algorithm.pr_opd.proj_allow_missing=True);;
+          [ "$INIT" != base ] && METHOD_ARGS+=(+algorithm.pr_opd.proj_allow_missing=True)
+          METHOD_ARGS+=(+algorithm.pr_opd.skill_source=$SKILL_SOURCE);;
+  grpo-pr)      ENTRY=verl.trainer.main_pr_opd; METHOD_ARGS=(+algorithm.pr_opd.oprd_coef=0.0 +algorithm.pr_opd.coef=0.0 +algorithm.pr_opd.sdl_coef=0.0);;
+  token-opd)    ENTRY=verl.trainer.main_pr_opd; METHOD_ARGS=(+algorithm.pr_opd.oprd_coef=0.0 +algorithm.pr_opd.coef=0.01 +algorithm.pr_opd.gate_beta=5.0
+                                                             +algorithm.pr_opd.sdl_coef=0.0 +algorithm.pr_opd.skill_source=$SKILL_SOURCE);;
+  skillsd-self) ENTRY=verl.trainer.main_pr_opd; METHOD_ARGS=(+algorithm.pr_opd.oprd_coef=0.0 +algorithm.pr_opd.coef=0.0
+                                                             +algorithm.pr_opd.sdl_coef=0.001 +algorithm.pr_opd.skill_source=$SKILL_SOURCE);;
 esac
+[ -n "$REF_MODEL" ] && METHOD_ARGS+=(+actor_rollout_ref.ref.model_path=$REF_MODEL)
+[ -n "$EVAL_SPLIT" ] && METHOD_ARGS+=(env.alfworld.eval_dataset=$EVAL_SPLIT)
+[ -n "$ROLLOUT_SEED" ] && METHOD_ARGS+=(+actor_rollout_ref.rollout.seed=$ROLLOUT_SEED)
+[ -n "$CKPT_CONTENTS" ] && METHOD_ARGS+=("actor_rollout_ref.actor.checkpoint.contents=[${CKPT_CONTENTS}]")
+[ -n "$RAY_CPUS" ] && METHOD_ARGS+=(ray_init.num_cpus=$RAY_CPUS)
 
 # Qwen3 models: the paper runs use the non-thinking chat template (the ALFWorld/WebShop
 # prompts ask for <think>...</think> inside the response). Pass --thinking to keep the template default.
-if [ "$THINKING" = 0 ] && echo "$MODEL_TAG" | grep -q 'qwen3'; then
+if [ "$NOTHINK" = 1 ] || { [ "$THINKING" = 0 ] && echo "$MODEL_TAG" | grep -q 'qwen3'; }; then
   METHOD_ARGS+=(+data.apply_chat_template_kwargs.enable_thinking=False)
 fi
 
@@ -104,12 +142,13 @@ export ALFWORLD_DATA="${ALFWORLD_DATA:-$HOME/.cache/alfworld}"
 export VLLM_ATTENTION_BACKEND="${VLLM_ATTENTION_BACKEND:-FLASH_ATTN}" VLLM_USE_V1="${VLLM_USE_V1:-1}" HYDRA_FULL_ERROR=1
 export VLLM_USE_FLASHINFER_SAMPLER="${VLLM_USE_FLASHINFER_SAMPLER:-0}"   # same sampler kernel as the paper runs
 export WANDB_MODE="${WANDB_MODE:-disabled}"
+export PR_OPD_KEEP_CKPT_STEPS="$KEEP_STEPS"   # read by verl/utils/checkpoint/checkpoint_manager.py
 
 echo "[train.sh] $NAME: method=$METHOD env=$ENV model=$MODEL init=$INIT proj=$PROJ coef=$COEF steps=$STEPS micro=$MICRO -> $CK (log: $RUNLOG)"
 python3 -m $ENTRY \
   algorithm.adv_estimator=grpo algorithm.use_kl_in_reward=False \
-  data.train_files=$DATA_DIR/train.parquet data.val_files=$DATA_DIR/test.parquet \
-  data.train_batch_size=16 data.val_batch_size=128 \
+  data.train_files=$DATA_DIR/train.parquet data.val_files=$VAL_DIR/test.parquet \
+  data.train_batch_size=16 data.val_batch_size=$VAL_N \
   data.max_prompt_length=$MAX_PROMPT data.max_response_length=512 \
   data.filter_overlong_prompts=True data.truncation=error data.return_raw_chat=True \
   actor_rollout_ref.model.path=$MODEL \
@@ -120,12 +159,12 @@ python3 -m $ENTRY \
   actor_rollout_ref.actor.use_kl_loss=True actor_rollout_ref.actor.kl_loss_coef=0.01 actor_rollout_ref.actor.kl_loss_type=low_var_kl \
   actor_rollout_ref.model.enable_gradient_checkpointing=True \
   actor_rollout_ref.actor.fsdp_config.param_offload=False actor_rollout_ref.actor.fsdp_config.optimizer_offload=False \
-  actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=32 \
+  actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=$LP_MICRO \
   actor_rollout_ref.rollout.tensor_model_parallel_size=$TP \
   actor_rollout_ref.rollout.name=vllm actor_rollout_ref.rollout.gpu_memory_utilization=$GPU_UTIL \
   actor_rollout_ref.rollout.enable_chunked_prefill=False actor_rollout_ref.rollout.enforce_eager=False actor_rollout_ref.rollout.free_cache_engine=False \
   actor_rollout_ref.rollout.val_kwargs.temperature=0.4 actor_rollout_ref.rollout.val_kwargs.do_sample=True \
-  actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=32 actor_rollout_ref.ref.fsdp_config.param_offload=True \
+  actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=$LP_MICRO actor_rollout_ref.ref.fsdp_config.param_offload=True \
   actor_rollout_ref.actor.use_invalid_action_penalty=True actor_rollout_ref.actor.invalid_action_penalty_coef=0.1 \
   env.env_name=$ENV_NAME env.seed=$SEED env.max_steps=$MAX_STEPS env.rollout.n=8 env.resources_per_worker.num_cpus=0.1 \
   trainer.critic_warmup=0 trainer.logger=[console] \

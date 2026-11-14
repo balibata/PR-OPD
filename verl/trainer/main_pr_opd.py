@@ -78,6 +78,11 @@ class PROPDTaskRunner:
             config.actor_rollout_ref.actor.use_sdar_loss = sdar_coef > 0
             config.actor_rollout_ref.actor.sdar_loss_coef = sdar_coef
             config.actor_rollout_ref.actor.sdar_gate_beta = cfg.get("gate_beta", 5.0)
+            # Optional Skill-SD objective (k3 KL with on-policy importance ratio, see
+            # skillsd_utils.compute_sdl_loss) on the same privileged teacher. Off by default.
+            sdl_coef = cfg.get("sdl_coef", 0.0)
+            config.actor_rollout_ref.actor.use_sdl_loss = sdl_coef > 0
+            config.actor_rollout_ref.actor.sdl_loss_coef = sdl_coef
 
             # Representation-space distillation (PR-OPD loss on hidden states).
             oprd_coef = cfg.get("oprd_coef", 0.01)

@@ -648,6 +648,20 @@ class DataParallelPPOActor(BasePPOActor):
 
                         projectors = self._get_oprd_projectors()
                         if projectors is not None:
+                            # Diagnostic: distance between the policy's OWN
+                            # (unprojected) states and the teacher's, logged next to the projected
+                            # loss. No gradient; raw loss = mean(2 - 2cos) over layers and tokens.
+                            with torch.no_grad():
+                                raw_loss, _ = compute_oprd_loss(
+                                    student_hidden={l: h.detach() for l, h in student_hidden.items()},
+                                    teacher_hidden=teacher_hidden,
+                                    response_mask=response_mask,
+                                    last_k=self.oprd_last_k,
+                                    normalize=True,
+                                    gate=oprd_gate_weight,
+                                )
+                            metrics["oprd/raw_loss"] = raw_loss.item()
+                            metrics["oprd/raw_cos"] = 1.0 - raw_loss.item() / 2.0
                             # MLP variant: the student hidden state is passed through a
                             # trainable per-layer MLP; the teacher side is left untouched.
                             student_hidden = {l: projectors(l, h) for l, h in student_hidden.items()}

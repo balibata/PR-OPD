@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
 import ray
 import gym
 import numpy as np
@@ -150,6 +151,24 @@ class WebshopMultiProcessEnv(gym.Env):
 
         print(self.goal_idxs)
 
+        # WEBSHOP_DET_EVAL=1 -> deterministic validation (val envs only): slot i always plays
+        # test goal (WEBSHOP_EVAL_OFFSET + i), so a full pass over the 500 test goals can be
+        # split into chunks (offset 0/125/250/375 with val_batch_size 125) and every arm/seed
+        # is evaluated on the identical goals. Default 0 keeps the legacy random sample.
+        self.det_eval = (not is_train) and os.environ.get("WEBSHOP_DET_EVAL", "0") == "1"
+        if self.det_eval:
+            off = int(os.environ.get("WEBSHOP_EVAL_OFFSET", "0"))
+            assert off + self.env_num <= len(self.goal_idxs), \
+                f"WEBSHOP_EVAL_OFFSET={off} + {self.env_num} slots exceeds {len(self.goal_idxs)} test goals"
+            self._det_off = off
+            # WEBSHOP_EVAL_ADVANCE=1: every reset() moves to the next chunk (offset += env_num, wrapping),
+            # so one val_only process with a val parquet of 500 rows and val_batch_size 125 plays all
+            # 500 test goals exactly once (the trainer averages the 4 equal-size batches).
+            self._det_advance = os.environ.get("WEBSHOP_EVAL_ADVANCE", "0") == "1"
+            self._det_round = 0
+            print(f"[WebshopMultiProcessEnv] deterministic val: goals {off}..{off + self.env_num - 1}"
+                  f"{' (advancing by ' + str(self.env_num) + ' per reset)' if self._det_advance else ''}")
+
     # ------------------------------------------------------------------
     # Base API ----------------------------------------------------------
     # ------------------------------------------------------------------
@@ -178,7 +197,15 @@ class WebshopMultiProcessEnv(gym.Env):
         return obs_list, reward_list, done_list, info_list
 
     def reset(self):
-        idx = self._rng.choice(self.goal_idxs, size=self.env_num, replace=False)
+        if getattr(self, "det_eval", False):
+            n = len(self.goal_idxs)
+            start = (self._det_off + (self._det_round * self.env_num if self._det_advance else 0)) % n
+            idx = np.asarray([self.goal_idxs[(start + i) % n] for i in range(self.env_num)])
+            if self._det_advance:
+                print(f"[WebshopMultiProcessEnv] deterministic val round {self._det_round}: goals {start}..{(start + self.env_num - 1) % n}")
+                self._det_round += 1
+        else:
+            idx = self._rng.choice(self.goal_idxs, size=self.env_num, replace=False)
         idx = np.repeat(idx, self.group_n).tolist()
 
         # Send reset commands to all workers

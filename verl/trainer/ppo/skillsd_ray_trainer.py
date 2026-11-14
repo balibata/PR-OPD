@@ -135,6 +135,20 @@ class SkillSDRayTrainer(RLSDRayTrainer):
 
                     batch.meta_info["global_token_num"] = torch.sum(batch.batch["attention_mask"], dim=-1).tolist()
 
+                    # Analysis hook: PR_OPD_SKILL_ONLY=1 turns the run into a skill sampler. The loaded
+                    # policy plays the training tasks and writes its hindsight skills (exported through
+                    # PR_OPD_SKILL_DUMP); there is no scoring pass, no update, no validation and no checkpoint,
+                    # so the weights never change. Off unless the variable is set.
+                    if os.environ.get("PR_OPD_SKILL_ONLY") == "1":
+                        self._generate_hindsight_skills(batch)
+                        print(f"[skill_only] step {self.global_steps}: skills generated, update skipped")
+                        progress_bar.update(1)
+                        self.global_steps += 1
+                        if is_last_step:
+                            progress_bar.close()
+                            return
+                        continue
+
                     with _timer("reward", timing_raw):
                         if self.use_rm:
                             reward_tensor = self.rm_wg.compute_rm_score(batch)

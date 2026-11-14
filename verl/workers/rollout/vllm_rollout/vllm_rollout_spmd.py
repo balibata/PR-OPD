@@ -220,6 +220,10 @@ class vLLMRollout(BaseRollout):
 
         # supporting adding any sampling params from the config file
         for k in config.keys():
+            # `seed` seeds the vLLM engine above. It must NOT become a per-request SamplingParams seed:
+            # that makes the n group copies of one prompt sample identical responses (GRPO advantage 0).
+            if str(k) == "seed":
+                continue
             if hasattr(SamplingParams(), str(k)):
                 kwargs[k] = config.get(k)
 
